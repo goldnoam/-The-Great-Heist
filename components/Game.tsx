@@ -446,24 +446,31 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
 
     const px = gameState.playerPos.x;
     const py = gameState.playerPos.y;
+    // Striped Shirt
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(px, py + 10, PLAYER_SIZE, 20);
     ctx.fillStyle = '#000000';
     ctx.fillRect(px, py + 12, PLAYER_SIZE, 4);
     ctx.fillRect(px, py + 20, PLAYER_SIZE, 4);
     ctx.fillRect(px, py + 28, PLAYER_SIZE, 2);
+    // Face
     ctx.fillStyle = '#fca5a5';
     ctx.beginPath();
     ctx.arc(px + PLAYER_SIZE / 2, py + 8, 8, 0, Math.PI * 2);
     ctx.fill();
+    // Improved Mask
     ctx.fillStyle = '#000000';
-    ctx.fillRect(px + PLAYER_SIZE / 2 - 8, py + 5, 16, 6);
+    ctx.fillRect(px + PLAYER_SIZE / 2 - 9, py + 5, 18, 7);
+    // Beady white eyes
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(px + PLAYER_SIZE / 2 - 5, py + 7, 2, 2);
-    ctx.fillRect(px + PLAYER_SIZE / 2 + 3, py + 7, 2, 2);
-    ctx.fillStyle = '#3f3f46';
     ctx.beginPath();
-    ctx.arc(px + PLAYER_SIZE / 2, py + 4, 8, Math.PI, 0);
+    ctx.arc(px + PLAYER_SIZE / 2 - 4, py + 8.5, 1.5, 0, Math.PI * 2);
+    ctx.arc(px + PLAYER_SIZE / 2 + 4, py + 8.5, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    // Beanie
+    ctx.fillStyle = '#27272a';
+    ctx.beginPath();
+    ctx.arc(px + PLAYER_SIZE / 2, py + 4, 9, Math.PI, 0);
     ctx.fill();
 
     if (gameState.score > 0) {
@@ -519,9 +526,10 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
       nextFloor();
     } else {
       sounds.passwordFail();
-      alert("INCORRECT PASSWORD! Access Denied.");
+      alert("INCORRECT PASSWORD! Security lock active.");
       setInputCode('');
-      setGameState(s => ({ ...s, showTerminal: false, playerPos: { x: s.playerPos.x - 40, y: s.playerPos.y - 40 } }));
+      // Force exit terminal and push player back
+      setGameState(s => ({ ...s, showTerminal: false, playerPos: { x: s.playerPos.x - 50, y: s.playerPos.y - 50 } }));
     }
   };
 
@@ -615,18 +623,21 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
         )}
 
         {gameState.showTerminal && !gameState.isGameOver && (
-          <div className="absolute inset-0 bg-black/90 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in zoom-in duration-300">
-            <div className="bg-zinc-900 border-2 border-yellow-500 w-full max-w-sm p-8 rounded-2xl shadow-[0_0_50px_rgba(234,179,8,0.2)]">
+          <div className="absolute inset-0 bg-black/95 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in zoom-in duration-300">
+            <div className="bg-zinc-950 border-2 border-yellow-500 w-full max-w-sm p-8 rounded-2xl shadow-[0_0_80px_rgba(234,179,8,0.15)] relative">
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-yellow-500 font-black text-xl tracking-tighter uppercase flex items-center gap-2">
                   <Unlock size={24} /> Security Terminal
                 </h2>
-                <button 
-                  onClick={() => setGameState(s => ({ ...s, showTerminal: false }))}
-                  className="text-zinc-500 hover:text-white transition-colors"
-                >
-                  ✕
-                </button>
+                {/* User requested: if code not found, cannot close dialog. We hide the X button. */}
+                {gameState.foundPassword && (
+                  <button 
+                    onClick={() => setGameState(s => ({ ...s, showTerminal: false }))}
+                    className="text-zinc-500 hover:text-white transition-colors p-2"
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
               
               <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
@@ -641,14 +652,14 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
                   placeholder="0 0 0 0"
                   value={inputCode}
                   onChange={(e) => setInputCode(e.target.value.replace(/\D/g, ''))}
-                  className="w-full bg-zinc-950 border-2 border-zinc-800 p-6 text-center text-4xl font-black tracking-[1em] text-yellow-500 rounded-xl focus:border-yellow-500 focus:outline-none transition-all placeholder:text-zinc-800"
+                  className="w-full bg-black border-2 border-zinc-800 p-6 text-center text-4xl font-black tracking-[1em] text-yellow-500 rounded-xl focus:border-yellow-500 focus:outline-none transition-all placeholder:text-zinc-900 shadow-inner"
                 />
                 <button 
                   type="submit"
                   disabled={inputCode.length < 4}
-                  className="w-full mt-6 bg-yellow-500 hover:bg-yellow-400 disabled:bg-zinc-800 disabled:text-zinc-600 text-black font-black p-4 rounded-xl transition-all flex items-center justify-center gap-2 uppercase tracking-widest shadow-lg active:scale-95"
+                  className="w-full mt-6 bg-yellow-500 hover:bg-yellow-400 disabled:bg-zinc-900 disabled:text-zinc-700 text-black font-black p-4 rounded-xl transition-all flex items-center justify-center gap-2 uppercase tracking-widest shadow-lg active:scale-95"
                 >
-                  Confirm Entry
+                  Verify Access
                 </button>
               </form>
               
@@ -657,9 +668,12 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
                     HINT: Security Note matches code "{gameState.password}"
                  </p>
               ) : (
-                 <p className="mt-4 text-center text-red-500 text-xs font-mono">
-                    HINT: Clearance code not found. Check the floor notes.
-                 </p>
+                 <div className="mt-4 p-4 bg-red-500/10 rounded-lg border border-red-500/20">
+                    <p className="text-center text-red-500 text-[10px] font-black uppercase tracking-widest mb-1">Warning</p>
+                    <p className="text-center text-zinc-400 text-xs leading-tight">
+                       Security terminal is hard-locked. Find the physical clearance code on the floor to bypass!
+                    </p>
+                 </div>
               )}
             </div>
           </div>
