@@ -1,43 +1,49 @@
-
-import { DollarSign, Lock, Move, Pause, Play, RotateCcw, Unlock, ShieldAlert, Timer as TimerIcon, Trophy } from 'lucide-react';
+import { DollarSign, Lock, Move, Pause, Play, RotateCcw, Unlock, ShieldAlert, Timer as TimerIcon, Trophy, Volume2, VolumeX } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Direction, GameState, Money, Point, Wall, Guard } from '../types';
 import { VirtualControls } from './VirtualControls';
 
 const CANVAS_WIDTH = 600;
 const CANVAS_HEIGHT = 400;
-const PLAYER_SIZE = 30;
-const GUARD_SIZE = 30;
-const SPEED = 5;
-const HINT_DISTANCE_THRESHOLD = 180;
+const PLAYER_SIZE = 20;
+const GUARD_SIZE = 24;
+const SPEED = 4;
 const INITIAL_TIME_PER_FLOOR = 60; // seconds
 
-// --- Sound Synthesis Helpers ---
-const playSound = (type: 'sine' | 'square' | 'sawtooth' | 'triangle', freq: number, duration: number, volume: number = 0.1) => {
+// --- Procedural Audio Engine ---
+let audioCtx: AudioContext | null = null;
+const getAudioCtx = () => {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  }
+  return audioCtx;
+};
+
+const playSound = (type: OscillatorType, freq: number, duration: number, volume: number = 0.1) => {
   try {
-    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const ctx = getAudioCtx();
+    if (ctx.state === 'suspended') ctx.resume();
     
-    const oscillator = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
+    const oscillator = ctx.createOscillator();
+    const gainNode = ctx.createGain();
 
     oscillator.type = type;
-    oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    oscillator.frequency.setValueAtTime(freq, ctx.currentTime);
     oscillator.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
+    gainNode.connect(ctx.destination);
 
-    gainNode.gain.setValueAtTime(volume, audioCtx.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+    gainNode.gain.setValueAtTime(volume, ctx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
 
     oscillator.start();
-    oscillator.stop(audioCtx.currentTime + duration);
+    oscillator.stop(ctx.currentTime + duration);
   } catch (e) {
-    console.warn('Audio playback blocked or failed', e);
+    // Silence errors to prevent console spam if audio is blocked
   }
 };
 
 const sounds = {
-  collect: () => playSound('triangle', 880, 0.1, 0.2),
+  collect: () => playSound('triangle', 880, 0.1, 0.15),
   passwordSuccess: () => {
     playSound('sine', 440, 0.2, 0.2);
     setTimeout(() => playSound('sine', 554.37, 0.2, 0.2), 100);
@@ -54,8 +60,7 @@ const sounds = {
   transition: () => {
     playSound('sine', 330, 0.5, 0.1);
     setTimeout(() => playSound('sine', 440, 0.5, 0.1), 150);
-  },
-  tick: () => playSound('sine', 200, 0.05, 0.05)
+  }
 };
 
 const generateWalls = (floor: number): Wall[] => {
@@ -71,8 +76,8 @@ const generateWalls = (floor: number): Wall[] => {
   for (let i = 0; i < numObstacles; i++) {
     const x = 50 + ((seed + i * 150) % (CANVAS_WIDTH - 150));
     const y = 50 + ((seed + i * 100) % (CANVAS_HEIGHT - 150));
-    const w = 20 + ((seed * (i + 1)) % 100);
-    const h = 20 + ((seed * (i + 2)) % 100);
+    const w = 40 + ((seed * (i + 1)) % 100);
+    const h = 40 + ((seed * (i + 2)) % 100);
     walls.push({ x, y, w, h });
   }
 
@@ -81,7 +86,7 @@ const generateWalls = (floor: number): Wall[] => {
 
 const generateGuards = (floor: number, walls: Wall[]): Guard[] => {
   const guards: Guard[] = [];
-  const numGuards = Math.min(1 + Math.floor(floor / 2), 4);
+  const numGuards = Math.min(1 + Math.floor(floor / 2), 5);
   
   for (let i = 0; i < numGuards; i++) {
     const startX = 200 + Math.random() * (CANVAS_WIDTH - 300);
@@ -115,8 +120,8 @@ const generateMoney = (floor: number, walls: Wall[]): Money[] => {
         y: 40 + Math.random() * (CANVAS_HEIGHT - 80)
       };
       valid = !walls.some(w => 
-        pos.x > w.x - 15 && pos.x < w.x + w.w + 15 &&
-        pos.y > w.y - 15 && pos.y < w.y + w.h + 15
+        pos.x > w.x - 20 && pos.x < w.x + w.w + 20 &&
+        pos.y > w.y - 20 && pos.y < w.y + w.h + 20
       );
     }
     money.push({
@@ -136,585 +141,429 @@ const generatePassword = () => {
 export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hasStarted, setHasStarted] = useState(false);
-  const [gameState, setGameState] = useState<GameState>({
-    playerPos: { x: 50, y: 50 },
-    currentFloor: 1,
-    score: 0,
-    money: [],
-    walls: [],
-    guards: [],
-    password: '',
-    foundPassword: false,
-    doorPos: { x: CANVAS_WIDTH - 50, y: CANVAS_HEIGHT - 50 },
-    isPaused: false,
-    isGameOver: false,
-    showTerminal: false,
-    lastPasswordFound: '',
-    timeLeft: INITIAL_TIME_PER_FLOOR
+  const [isMuted, setIsMuted] = useState(false);
+  const [moveDir, setMoveDir] = useState<Direction>(Direction.NONE);
+  const [inputPassword, setInputPassword] = useState('');
+
+  const [gameState, setGameState] = useState<GameState>(() => {
+    const walls = generateWalls(1);
+    return {
+      playerPos: { x: 30, y: 30 },
+      currentFloor: 1,
+      score: 0,
+      money: generateMoney(1, walls),
+      walls: walls,
+      guards: generateGuards(1, walls),
+      password: generatePassword(),
+      // Fix: removed 'boolean' type usage as value
+      foundPassword: false,
+      doorPos: { x: CANVAS_WIDTH - 40, y: CANVAS_HEIGHT - 40 },
+      isPaused: false,
+      isGameOver: false,
+      // Fix: completed missing 'showTerminal' property
+      showTerminal: false,
+      lastPasswordFound: '',
+      timeLeft: INITIAL_TIME_PER_FLOOR,
+    };
   });
 
-  const [inputCode, setInputCode] = useState('');
-  const [movement, setMovement] = useState<{ [key: string]: boolean }>({});
-  const animationFrameRef = useRef<number>();
-  const pulseRef = useRef(0);
-  const lastTimeRef = useRef(Date.now());
-  const tickCounterRef = useRef(0);
-
-  const initFloor = useCallback((floor: number, prevScore: number = 0) => {
-    const walls = generateWalls(floor);
-    const money = generateMoney(floor, walls);
-    const guards = generateGuards(floor, walls);
-    const password = generatePassword();
-    const doorPos = { x: CANVAS_WIDTH - 50, y: CANVAS_HEIGHT - 50 };
-    
-    setGameState(prev => ({
-      ...prev,
-      playerPos: { x: 50, y: 50 },
-      currentFloor: floor,
-      score: prevScore,
-      money,
-      walls,
-      guards,
-      password,
+  const resetGame = useCallback(() => {
+    const walls = generateWalls(1);
+    setGameState({
+      playerPos: { x: 30, y: 30 },
+      currentFloor: 1,
+      score: 0,
+      money: generateMoney(1, walls),
+      walls: walls,
+      guards: generateGuards(1, walls),
+      password: generatePassword(),
       foundPassword: false,
-      doorPos,
+      doorPos: { x: CANVAS_WIDTH - 40, y: CANVAS_HEIGHT - 40 },
       isPaused: false,
       isGameOver: false,
       showTerminal: false,
       lastPasswordFound: '',
-      timeLeft: INITIAL_TIME_PER_FLOOR
-    }));
+      timeLeft: INITIAL_TIME_PER_FLOOR,
+    });
+    setHasStarted(true);
+    setMoveDir(Direction.NONE);
+    setInputPassword('');
   }, []);
+
+  const nextFloor = useCallback(() => {
+    setGameState(prev => {
+      const nextF = prev.currentFloor + 1;
+      const walls = generateWalls(nextF);
+      if (!isMuted) sounds.transition();
+      return {
+        ...prev,
+        currentFloor: nextF,
+        playerPos: { x: 30, y: 30 },
+        money: generateMoney(nextF, walls),
+        walls: walls,
+        guards: generateGuards(nextF, walls),
+        password: generatePassword(),
+        foundPassword: false,
+        doorPos: { x: CANVAS_WIDTH - 40, y: CANVAS_HEIGHT - 40 },
+        timeLeft: INITIAL_TIME_PER_FLOOR,
+      };
+    });
+  }, [isMuted]);
 
   useEffect(() => {
-    initFloor(1);
-  }, [initFloor]);
-
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    setMovement(prev => ({ ...prev, [e.code]: true }));
-    if (e.code === 'KeyP') setGameState(s => ({ ...s, isPaused: !s.isPaused }));
-    if (e.code === 'KeyR') resetGame();
-  }, []);
-
-  const handleKeyUp = useCallback((e: KeyboardEvent) => {
-    setMovement(prev => ({ ...prev, [e.code]: false }));
-  }, []);
-
-  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (gameState.showTerminal) return;
+      switch (e.key.toLowerCase()) {
+        case 'w': setMoveDir(Direction.UP); break;
+        case 's': setMoveDir(Direction.DOWN); break;
+        case 'a': setMoveDir(Direction.LEFT); break;
+        case 'd': setMoveDir(Direction.RIGHT); break;
+        case 'p': setGameState(prev => ({ ...prev, isPaused: !prev.isPaused })); break;
+      }
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      if (['w', 's', 'a', 'd'].includes(key)) setMoveDir(Direction.NONE);
+    };
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [handleKeyDown, handleKeyUp]);
+  }, [gameState.showTerminal]);
 
-  const resetGame = () => {
-    initFloor(1, 0);
-    setInputCode('');
-  };
-
-  const nextFloor = () => {
-    sounds.transition();
-    initFloor(gameState.currentFloor + 1, gameState.score);
-    setInputCode('');
-  };
-
-  const update = useCallback(() => {
+  // Game Loop
+  useEffect(() => {
     if (!hasStarted || gameState.isPaused || gameState.isGameOver || gameState.showTerminal) return;
 
-    const now = Date.now();
-    const dt = (now - lastTimeRef.current) / 1000;
-    lastTimeRef.current = now;
+    const interval = setInterval(() => {
+      setGameState(prev => {
+        let newX = prev.playerPos.x;
+        let newY = prev.playerPos.y;
 
-    pulseRef.current += 0.05;
+        if (moveDir === Direction.UP) newY -= SPEED;
+        if (moveDir === Direction.DOWN) newY += SPEED;
+        if (moveDir === Direction.LEFT) newX -= SPEED;
+        if (moveDir === Direction.RIGHT) newX += SPEED;
 
-    setGameState(prev => {
-      let newTimeLeft = prev.timeLeft - dt;
-      if (newTimeLeft <= 0) {
-        sounds.passwordFail();
-        const penScore = Math.max(0, prev.score - 500);
-        alert("SECURITY ALERT: Timeout! Floor reset.");
-        initFloor(prev.currentFloor, penScore);
-        return prev;
-      }
-      
-      if (newTimeLeft < 5) {
-        tickCounterRef.current += dt;
-        if (tickCounterRef.current > 0.5) {
-          sounds.tick();
-          tickCounterRef.current = 0;
-        }
-      }
+        // Wall collision
+        const collide = prev.walls.some(w => 
+          newX + PLAYER_SIZE > w.x && newX < w.x + w.w &&
+          newY + PLAYER_SIZE > w.y && newY < w.y + w.h
+        );
 
-      let dx = 0;
-      let dy = 0;
-      if (movement['ArrowUp'] || movement['KeyW']) dy -= SPEED;
-      if (movement['ArrowDown'] || movement['KeyS']) dy += SPEED;
-      if (movement['ArrowLeft'] || movement['KeyA']) dx -= SPEED;
-      if (movement['ArrowRight'] || movement['KeyD']) dx += SPEED;
-
-      let newX = prev.playerPos.x + dx;
-      let newY = prev.playerPos.y + dy;
-
-      const collides = (nx: number, ny: number) => {
-        return prev.walls.some(w => (
-          nx + PLAYER_SIZE > w.x &&
-          nx < w.x + w.w &&
-          ny + PLAYER_SIZE > w.y &&
-          ny < w.y + w.h
-        ));
-      };
-
-      if (collides(newX, prev.playerPos.y)) newX = prev.playerPos.x;
-      if (collides(prev.playerPos.x, newY)) newY = prev.playerPos.y;
-      if (collides(newX, newY)) {
+        if (!collide) {
+          newX = Math.max(10, Math.min(CANVAS_WIDTH - PLAYER_SIZE - 10, newX));
+          newY = Math.max(10, Math.min(CANVAS_HEIGHT - PLAYER_SIZE - 10, newY));
+        } else {
           newX = prev.playerPos.x;
           newY = prev.playerPos.y;
-      }
-
-      newX = Math.max(10, Math.min(CANVAS_WIDTH - PLAYER_SIZE - 10, newX));
-      newY = Math.max(10, Math.min(CANVAS_HEIGHT - PLAYER_SIZE - 10, newY));
-
-      const newPos = { x: newX, y: newY };
-
-      let newScore = prev.score;
-      let collectedAtLeastOne = false;
-      const newMoney = prev.money.map(m => {
-        if (!m.collected && 
-            Math.abs(m.pos.x - (newPos.x + PLAYER_SIZE/2)) < 25 && 
-            Math.abs(m.pos.y - (newPos.y + PLAYER_SIZE/2)) < 25) {
-          newScore += m.value;
-          collectedAtLeastOne = true;
-          return { ...m, collected: true };
         }
-        return m;
-      });
 
-      if (collectedAtLeastOne) sounds.collect();
+        // Money collection
+        let newScore = prev.score;
+        const newMoney = prev.money.map(m => {
+          if (!m.collected && 
+              Math.abs(newX - m.pos.x) < 20 && 
+              Math.abs(newY - m.pos.y) < 20) {
+            if (!isMuted) sounds.collect();
+            newScore += m.value;
+            return { ...m, collected: true };
+          }
+          return m;
+        });
 
-      const newGuards = prev.guards.map(g => {
-        const target = g.path[g.currentPathIndex];
-        const angle = Math.atan2(target.y - g.pos.y, target.x - g.pos.x);
-        const dist = Math.sqrt(Math.pow(target.x - g.pos.x, 2) + Math.pow(target.y - g.pos.y, 2));
+        // Guard movement & collision
+        const newGuards = prev.guards.map(g => {
+          const target = g.path[g.currentPathIndex];
+          const dx = target.x - g.pos.x;
+          const dy = target.y - g.pos.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          
+          let newGPos = { ...g.pos };
+          let newIdx = g.currentPathIndex;
+          
+          if (dist < 5) {
+            newIdx = (g.currentPathIndex + 1) % g.path.length;
+          } else {
+            newGPos.x += (dx / dist) * g.speed;
+            newGPos.y += (dy / dist) * g.speed;
+          }
+
+          return { ...g, pos: newGPos, currentPathIndex: newIdx };
+        });
+
+        const caught = newGuards.some(g => 
+          Math.abs(newX - g.pos.x) < 20 && 
+          Math.abs(newY - g.pos.y) < 20
+        );
+
+        if (caught) {
+          if (!isMuted) sounds.caught();
+          return { ...prev, isGameOver: true };
+        }
+
+        // Door interaction
+        const distToDoor = Math.sqrt(
+          Math.pow(newX - prev.doorPos.x, 2) + Math.pow(newY - prev.doorPos.y, 2)
+        );
         
-        let newGPos = { ...g.pos };
-        let newIndex = g.currentPathIndex;
-
-        if (dist < 5) {
-          newIndex = (g.currentPathIndex + 1) % g.path.length;
-        } else {
-          newGPos.x += Math.cos(angle) * g.speed;
-          newGPos.y += Math.sin(angle) * g.speed;
+        if (distToDoor < 30 && !prev.foundPassword) {
+            return { ...prev, showTerminal: true, playerPos: { x: newX, y: newY } };
         }
 
-        return { ...g, pos: newGPos, currentPathIndex: newIndex };
+        if (prev.foundPassword && distToDoor < 20) {
+           nextFloor();
+           return prev; 
+        }
+
+        return {
+          ...prev,
+          playerPos: { x: newX, y: newY },
+          score: newScore,
+          money: newMoney,
+          guards: newGuards,
+          timeLeft: Math.max(0, prev.timeLeft - 1/60)
+        };
       });
+    }, 1000 / 60);
 
-      const caught = newGuards.some(g => {
-        return Math.abs(g.pos.x - (newPos.x + PLAYER_SIZE / 2)) < 25 &&
-               Math.abs(g.pos.y - (newPos.y + PLAYER_SIZE / 2)) < 25;
+    return () => clearInterval(interval);
+  }, [hasStarted, gameState.isPaused, gameState.isGameOver, gameState.showTerminal, moveDir, isMuted, nextFloor]);
+
+  // Timer logic
+  useEffect(() => {
+    if (!hasStarted || gameState.isPaused || gameState.isGameOver || gameState.showTerminal) return;
+    const t = setInterval(() => {
+      setGameState(prev => {
+        if (prev.timeLeft <= 0) return { ...prev, isGameOver: true };
+        return prev;
       });
+    }, 1000);
+    return () => clearInterval(t);
+  }, [hasStarted, gameState.isPaused, gameState.isGameOver, gameState.showTerminal]);
 
-      if (caught) {
-        sounds.caught();
-        return { ...prev, isGameOver: true };
-      }
-
-      const passwordStation = { x: 100, y: 300 };
-      let found = prev.foundPassword;
-      if (!found && 
-          Math.abs(passwordStation.x - (newPos.x + PLAYER_SIZE/2)) < 40 &&
-          Math.abs(passwordStation.y - (newPos.y + PLAYER_SIZE/2)) < 40) {
-        found = true;
-        sounds.collect();
-      }
-
-      let showTerminal = prev.showTerminal;
-      if (Math.abs(prev.doorPos.x - (newPos.x + PLAYER_SIZE/2)) < 40 &&
-          Math.abs(prev.doorPos.y - (newPos.y + PLAYER_SIZE/2)) < 40) {
-        showTerminal = true;
-      }
-
-      return {
-        ...prev,
-        playerPos: newPos,
-        money: newMoney,
-        guards: newGuards,
-        score: newScore,
-        foundPassword: found,
-        showTerminal,
-        timeLeft: newTimeLeft
-      };
-    });
-  }, [movement, gameState.isPaused, gameState.isGameOver, gameState.showTerminal, hasStarted, initFloor]);
-
-  const draw = useCallback(() => {
+  // Rendering
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    ctx.fillStyle = isDark ? '#18181b' : '#f4f4f5';
-    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    ctx.strokeStyle = isDark ? '#27272a' : '#e4e4e7';
-    ctx.lineWidth = 1;
-    for(let i=0; i<CANVAS_WIDTH; i+=40) {
-      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, CANVAS_HEIGHT); ctx.stroke();
-    }
-    for(let i=0; i<CANVAS_HEIGHT; i+=40) {
-      ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(CANVAS_WIDTH, i); ctx.stroke();
-    }
+    // Draw Walls
+    ctx.fillStyle = isDark ? '#3f3f46' : '#d4d4d8';
+    gameState.walls.forEach(w => ctx.fillRect(w.x, w.y, w.w, w.h));
 
-    gameState.walls.forEach(w => {
-      ctx.fillStyle = isDark ? '#3f3f46' : '#a1a1aa';
-      ctx.fillRect(w.x, w.y, w.w, w.h);
-      ctx.strokeStyle = isDark ? '#52525b' : '#71717a';
-      ctx.strokeRect(w.x, w.y, w.w, w.h);
-    });
-
+    // Draw Money
+    ctx.fillStyle = '#22c55e';
     gameState.money.forEach(m => {
       if (!m.collected) {
-        ctx.save();
-        ctx.translate(m.pos.x, m.pos.y);
-        ctx.fillStyle = '#166534'; 
-        ctx.fillRect(-10, -6, 20, 12);
-        ctx.fillStyle = '#22c55e';
-        ctx.fillRect(-8, -4, 16, 8);
-        ctx.fillStyle = 'white';
-        ctx.font = 'bold 10px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('$', 0, 1);
-        ctx.shadowBlur = 8;
-        ctx.shadowColor = '#22c55e';
-        ctx.strokeStyle = '#14532d';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(-10, -6, 20, 12);
-        ctx.restore();
-        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        ctx.arc(m.pos.x, m.pos.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.font = '10px bold sans-serif';
+        ctx.fillText('$', m.pos.x - 3, m.pos.y + 4);
       }
     });
 
-    const passwordStation = { x: 100, y: 300 };
-    ctx.fillStyle = gameState.foundPassword ? '#4ade80' : '#ef4444';
-    ctx.fillRect(passwordStation.x - 10, passwordStation.y - 10, 20, 20);
-    ctx.fillStyle = 'white';
-    ctx.font = 'bold 10px sans-serif';
-    ctx.fillText('CODE', passwordStation.x - 14, passwordStation.y + 4);
+    // Draw Terminal/Door
+    ctx.fillStyle = gameState.foundPassword ? '#22c55e' : '#eab308';
+    ctx.fillRect(gameState.doorPos.x, gameState.doorPos.y, 30, 30);
+    ctx.fillStyle = '#fff';
+    ctx.font = '10px bold sans-serif';
+    ctx.fillText(gameState.foundPassword ? 'EXIT' : 'LOCK', gameState.doorPos.x, gameState.doorPos.y - 5);
 
-    ctx.fillStyle = '#8b5cf6';
-    ctx.fillRect(gameState.doorPos.x - 20, gameState.doorPos.y - 20, 40, 40);
-    ctx.strokeStyle = 'white';
-    ctx.strokeRect(gameState.doorPos.x - 20, gameState.doorPos.y - 20, 40, 40);
-    ctx.fillStyle = 'white';
-    ctx.fillText('EXIT', gameState.doorPos.x - 12, gameState.doorPos.y + 5);
-
-    const playerMidX = gameState.playerPos.x + PLAYER_SIZE / 2;
-    const playerMidY = gameState.playerPos.y + PLAYER_SIZE / 2;
-    
-    // Hint
-    const distToExit = Math.sqrt(Math.pow(gameState.doorPos.x - playerMidX, 2) + Math.pow(gameState.doorPos.y - playerMidY, 2));
-    if (distToExit < HINT_DISTANCE_THRESHOLD && !gameState.showTerminal && hasStarted) {
-      const angle = Math.atan2(gameState.doorPos.y - playerMidY, gameState.doorPos.x - playerMidX);
-      const hintOpacity = (1 - distToExit / HINT_DISTANCE_THRESHOLD) * (0.3 + 0.2 * Math.sin(pulseRef.current * 4));
-      ctx.save();
-      ctx.translate(playerMidX + Math.cos(angle) * 40, playerMidY + Math.sin(angle) * 40);
-      ctx.rotate(angle);
-      ctx.strokeStyle = `rgba(139, 92, 246, ${hintOpacity})`;
-      ctx.lineWidth = 3;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(-10, -5); ctx.lineTo(5, 0); ctx.lineTo(-10, 5);
-      ctx.stroke();
-      ctx.restore();
-    }
-
+    // Draw Guards
+    ctx.fillStyle = '#ef4444';
     gameState.guards.forEach(g => {
-      ctx.fillStyle = '#3b82f6';
+      ctx.fillRect(g.pos.x, g.pos.y, GUARD_SIZE, GUARD_SIZE);
+      ctx.strokeStyle = 'rgba(239, 68, 68, 0.2)';
       ctx.beginPath();
-      ctx.arc(g.pos.x, g.pos.y, 15, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = 'rgba(59, 130, 246, 0.15)';
-      ctx.beginPath();
-      ctx.arc(g.pos.x, g.pos.y, 45, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#1e3a8a';
-      ctx.fillRect(g.pos.x - 10, g.pos.y - 18, 20, 6);
+      ctx.arc(g.pos.x + 12, g.pos.y + 12, 50, 0, Math.PI * 2);
+      ctx.stroke();
     });
 
-    const px = gameState.playerPos.x;
-    const py = gameState.playerPos.y;
-    // Striped Shirt
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(px, py + 10, PLAYER_SIZE, 20);
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(px, py + 12, PLAYER_SIZE, 4);
-    ctx.fillRect(px, py + 20, PLAYER_SIZE, 4);
-    ctx.fillRect(px, py + 28, PLAYER_SIZE, 2);
-    // Face
-    ctx.fillStyle = '#fca5a5';
-    ctx.beginPath();
-    ctx.arc(px + PLAYER_SIZE / 2, py + 8, 8, 0, Math.PI * 2);
-    ctx.fill();
-    // Improved Mask
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(px + PLAYER_SIZE / 2 - 9, py + 5, 18, 7);
-    // Beady white eyes
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(px + PLAYER_SIZE / 2 - 4, py + 8.5, 1.5, 0, Math.PI * 2);
-    ctx.arc(px + PLAYER_SIZE / 2 + 4, py + 8.5, 1.5, 0, Math.PI * 2);
-    ctx.fill();
-    // Beanie
-    ctx.fillStyle = '#27272a';
-    ctx.beginPath();
-    ctx.arc(px + PLAYER_SIZE / 2, py + 4, 9, Math.PI, 0);
-    ctx.fill();
+    // Draw Player
+    ctx.fillStyle = isDark ? '#fbbf24' : '#b45309';
+    ctx.fillRect(gameState.playerPos.x, gameState.playerPos.y, PLAYER_SIZE, PLAYER_SIZE);
+    ctx.strokeStyle = '#fff';
+    ctx.strokeRect(gameState.playerPos.x, gameState.playerPos.y, PLAYER_SIZE, PLAYER_SIZE);
 
-    if (gameState.score > 0) {
-      ctx.fillStyle = '#713f12';
-      ctx.beginPath();
-      ctx.arc(px + 4, py + 20, 6, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#45210b';
-      ctx.stroke();
-    }
+  }, [gameState, isDark]);
 
-    if (gameState.isPaused) {
-      ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      ctx.fillRect(0,0, CANVAS_WIDTH, CANVAS_HEIGHT);
-      ctx.fillStyle = 'white';
-      ctx.font = 'bold 40px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('PAUSED', CANVAS_WIDTH/2, CANVAS_HEIGHT/2);
-    }
-
-    if (gameState.isGameOver) {
-      ctx.fillStyle = 'rgba(0,0,0,0.85)';
-      ctx.fillRect(0,0, CANVAS_WIDTH, CANVAS_HEIGHT);
-      ctx.fillStyle = '#ef4444';
-      ctx.font = 'bold 48px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('BUSTED!', CANVAS_WIDTH/2, CANVAS_HEIGHT/2);
-      ctx.fillStyle = 'white';
-      ctx.font = '20px sans-serif';
-      ctx.fillText('The guards caught you.', CANVAS_WIDTH/2, CANVAS_HEIGHT/2 + 40);
-      ctx.font = 'bold 16px sans-serif';
-      ctx.fillText('PRESS R TO RETRY', CANVAS_WIDTH/2, CANVAS_HEIGHT/2 + 80);
-    }
-  }, [gameState, isDark, hasStarted]);
-
-  const loop = useCallback(() => {
-    update();
-    draw();
-    animationFrameRef.current = requestAnimationFrame(loop);
-  }, [update, draw]);
-
-  useEffect(() => {
-    animationFrameRef.current = requestAnimationFrame(loop);
-    return () => {
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-    };
-  }, [loop]);
-
-  const handlePasswordSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (inputCode === gameState.password) {
-      sounds.passwordSuccess();
-      nextFloor();
+  const handlePasswordSubmit = () => {
+    if (inputPassword === gameState.password) {
+      if (!isMuted) sounds.passwordSuccess();
+      setGameState(prev => ({ ...prev, foundPassword: true, showTerminal: false }));
     } else {
-      sounds.passwordFail();
-      alert("INCORRECT PASSWORD! Security lock active.");
-      setInputCode('');
-      // Force exit terminal and push player back
-      setGameState(s => ({ ...s, showTerminal: false, playerPos: { x: s.playerPos.x - 50, y: s.playerPos.y - 50 } }));
+      if (!isMuted) sounds.passwordFail();
+      setInputPassword('');
+      setGameState(prev => ({ ...prev, showTerminal: false }));
     }
   };
 
-  const timerPercentage = (gameState.timeLeft / INITIAL_TIME_PER_FLOOR) * 100;
+  if (!hasStarted) {
+    return (
+      <div className="flex flex-col items-center gap-8 text-center max-w-md">
+        <div className="relative">
+          <div className="absolute -inset-4 bg-yellow-500/20 blur-xl rounded-full animate-pulse" />
+          <DollarSign size={80} className="text-yellow-500 relative" />
+        </div>
+        <div>
+          <h2 className="text-4xl font-black uppercase tracking-tighter mb-2">The Great Heist</h2>
+          <p className="text-sm opacity-60">Infiltrate the bank, collect the cash, crack the code, and escape to the next floor. Don't let the guards spot you.</p>
+        </div>
+        <button 
+          onClick={resetGame}
+          className="group relative px-8 py-4 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase tracking-widest rounded-xl transition-all hover:scale-105 active:scale-95 shadow-[0_8px_0_0_#ca8a04]"
+        >
+          Begin Infiltration
+        </button>
+      </div>
+    );
+  }
 
   return (
-    <div className="relative group max-w-full">
-      {/* HUD */}
-      <div className="mb-4 flex flex-wrap gap-4 items-center justify-between bg-zinc-800/20 p-4 rounded-xl border border-zinc-700/30 backdrop-blur-sm shadow-xl">
-        <div className="flex gap-6 items-center">
-          <div className="flex flex-col">
-            <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-500">Floor</span>
-            <span className="text-2xl font-black text-yellow-500 leading-none">{gameState.currentFloor}</span>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-500">Loot</span>
-            <span className="text-2xl font-black text-green-500 leading-none">${gameState.score.toLocaleString()}</span>
-          </div>
-          <div className="flex flex-col min-w-[120px]">
-            <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-500 flex items-center gap-1">
-              <TimerIcon size={10} /> Time Left
-            </span>
-            <div className="h-2 w-full bg-zinc-800 rounded-full mt-1 overflow-hidden">
-               <div 
-                 className={`h-full transition-all duration-300 ${timerPercentage < 25 ? 'bg-red-500' : 'bg-yellow-500'}`}
-                 style={{ width: `${timerPercentage}%` }}
-               />
-            </div>
-            <span className={`text-xs font-mono mt-1 ${gameState.timeLeft < 10 ? 'text-red-500 animate-pulse' : 'text-zinc-400'}`}>
-              {Math.max(0, Math.ceil(gameState.timeLeft))}s
-            </span>
+    <div className="flex flex-col items-center gap-6 w-full max-w-4xl">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full">
+        <div className="bg-zinc-900/40 p-3 rounded-xl border border-zinc-800 flex items-center gap-3">
+          <Trophy className="text-yellow-500" size={20} />
+          <div>
+            <p className="text-[10px] uppercase font-bold opacity-40">Score</p>
+            <p className="font-black text-lg">${gameState.score.toLocaleString()}</p>
           </div>
         </div>
-        
-        <div className="flex gap-2">
-          <button 
-            onClick={() => setGameState(s => ({ ...s, isPaused: !s.isPaused }))}
-            className="p-3 bg-zinc-700/50 hover:bg-zinc-600 rounded-lg transition-all"
-            aria-label="Pause"
-          >
-            {gameState.isPaused ? <Play size={20} /> : <Pause size={20} />}
-          </button>
-          <button 
-            onClick={resetGame}
-            className="p-3 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-all"
-            aria-label="Reset"
-          >
-            <RotateCcw size={20} />
-          </button>
+        <div className="bg-zinc-900/40 p-3 rounded-xl border border-zinc-800 flex items-center gap-3">
+          <Move className="text-blue-500" size={20} />
+          <div>
+            <p className="text-[10px] uppercase font-bold opacity-40">Floor</p>
+            <p className="font-black text-lg">{gameState.currentFloor}</p>
+          </div>
+        </div>
+        <div className="bg-zinc-900/40 p-3 rounded-xl border border-zinc-800 flex items-center gap-3">
+          <TimerIcon className={gameState.timeLeft < 10 ? "text-red-500 animate-pulse" : "text-zinc-500"} size={20} />
+          <div>
+            <p className="text-[10px] uppercase font-bold opacity-40">Time</p>
+            <p className="font-black text-lg">{Math.ceil(gameState.timeLeft)}s</p>
+          </div>
+        </div>
+        <div className="bg-zinc-900/40 p-3 rounded-xl border border-zinc-800 flex items-center gap-3">
+          {gameState.foundPassword ? <Unlock className="text-green-500" size={20} /> : <Lock className="text-red-500" size={20} />}
+          <div>
+            <p className="text-[10px] uppercase font-bold opacity-40">Security</p>
+            <p className="font-black text-lg">{gameState.foundPassword ? 'CRACKED' : 'LOCKED'}</p>
+          </div>
         </div>
       </div>
 
-      {/* Main Canvas Area */}
-      <div className="relative rounded-2xl overflow-hidden border-4 border-zinc-800 shadow-2xl bg-zinc-900">
+      <div className="relative group w-full flex justify-center">
         <canvas 
           ref={canvasRef} 
           width={CANVAS_WIDTH} 
           height={CANVAS_HEIGHT}
-          className="max-w-full h-auto cursor-none"
+          className="bg-zinc-900 rounded-2xl border-4 border-zinc-800 shadow-2xl cursor-none w-full max-w-[600px] aspect-[3/2]"
         />
 
-        {/* Start Screen Overlay */}
-        {!hasStarted && (
-          <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-500">
-             <Trophy size={64} className="text-yellow-500 mb-6" />
-             <h1 className="text-3xl font-black text-white mb-2 uppercase tracking-tighter">Ready for the heist?</h1>
-             <p className="text-zinc-400 max-w-xs mb-8">Collect loot, find the password, and escape the floor before security locks down!</p>
-             <button 
-               onClick={() => {
-                 setHasStarted(true);
-                 sounds.transition();
-               }}
-               className="bg-yellow-500 hover:bg-yellow-400 text-black font-black px-12 py-4 rounded-xl text-xl uppercase tracking-widest shadow-[0_0_30px_rgba(234,179,8,0.4)] hover:scale-105 active:scale-95 transition-all"
-             >
-               Start Heist
-             </button>
-          </div>
-        )}
-
-        {hasStarted && gameState.foundPassword && !gameState.showTerminal && !gameState.isGameOver && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-green-500 text-white px-4 py-2 rounded-full font-mono font-bold shadow-lg animate-bounce border-2 border-white">
-            SCANNED CODE: {gameState.password}
-          </div>
-        )}
-
-        {hasStarted && !gameState.foundPassword && !gameState.showTerminal && !gameState.isGameOver && (
-            <div className="absolute top-4 right-4 bg-zinc-800/80 text-white p-3 rounded-lg text-xs border border-zinc-700">
-                <p className="flex items-center gap-2 mb-1"><Lock size={14} className="text-red-400" /> Door is Locked</p>
-                <p className="text-zinc-400">Find the security note on the floor!</p>
-            </div>
-        )}
-
-        {gameState.showTerminal && !gameState.isGameOver && (
-          <div className="absolute inset-0 bg-black/95 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in zoom-in duration-300">
-            <div className="bg-zinc-950 border-2 border-yellow-500 w-full max-w-sm p-8 rounded-2xl shadow-[0_0_80px_rgba(234,179,8,0.15)] relative">
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-yellow-500 font-black text-xl tracking-tighter uppercase flex items-center gap-2">
-                  <Unlock size={24} /> Security Terminal
-                </h2>
-                {/* User requested: if code not found, cannot close dialog. We hide the X button. */}
-                {gameState.foundPassword && (
-                  <button 
-                    onClick={() => setGameState(s => ({ ...s, showTerminal: false }))}
-                    className="text-zinc-500 hover:text-white transition-colors p-2"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-              
-              <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
-                Vault exit protocol initiated. Please enter the 4-digit floor clearance code.
-              </p>
-
-              <form onSubmit={handlePasswordSubmit}>
-                <input 
-                  autoFocus
-                  type="text" 
-                  maxLength={4}
-                  placeholder="0 0 0 0"
-                  value={inputCode}
-                  onChange={(e) => setInputCode(e.target.value.replace(/\D/g, ''))}
-                  className="w-full bg-black border-2 border-zinc-800 p-6 text-center text-4xl font-black tracking-[1em] text-yellow-500 rounded-xl focus:border-yellow-500 focus:outline-none transition-all placeholder:text-zinc-900 shadow-inner"
-                />
-                <button 
-                  type="submit"
-                  disabled={inputCode.length < 4}
-                  className="w-full mt-6 bg-yellow-500 hover:bg-yellow-400 disabled:bg-zinc-900 disabled:text-zinc-700 text-black font-black p-4 rounded-xl transition-all flex items-center justify-center gap-2 uppercase tracking-widest shadow-lg active:scale-95"
-                >
-                  Verify Access
+        {(gameState.isPaused || gameState.isGameOver) && (
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm rounded-xl flex flex-col items-center justify-center p-6 text-center max-w-[600px] mx-auto">
+            {gameState.isGameOver ? (
+              <>
+                <ShieldAlert size={60} className="text-red-500 mb-4" />
+                <h2 className="text-3xl font-black uppercase mb-2">Busted!</h2>
+                <p className="mb-6 opacity-60">You were caught or ran out of time on floor {gameState.currentFloor}.</p>
+                <button onClick={resetGame} className="flex items-center gap-2 px-6 py-3 bg-white text-black font-bold rounded-lg hover:bg-zinc-200 transition-colors">
+                  <RotateCcw size={18} /> Try Again
                 </button>
-              </form>
-              
-              {gameState.foundPassword ? (
-                 <p className="mt-4 text-center text-green-500 text-xs font-mono">
-                    HINT: Security Note matches code "{gameState.password}"
-                 </p>
-              ) : (
-                 <div className="mt-4 p-4 bg-red-500/10 rounded-lg border border-red-500/20">
-                    <p className="text-center text-red-500 text-[10px] font-black uppercase tracking-widest mb-1">Warning</p>
-                    <p className="text-center text-zinc-400 text-xs leading-tight">
-                       Security terminal is hard-locked. Find the physical clearance code on the floor to bypass!
-                    </p>
-                 </div>
-              )}
+              </>
+            ) : (
+              <>
+                <Pause size={60} className="text-yellow-500 mb-4" />
+                <h2 className="text-3xl font-black uppercase mb-6">Game Paused</h2>
+                <button 
+                  onClick={() => setGameState(prev => ({ ...prev, isPaused: false }))}
+                  className="flex items-center gap-2 px-6 py-3 bg-yellow-500 text-black font-bold rounded-lg hover:bg-yellow-400 transition-colors"
+                >
+                  <Play size={18} /> Resume
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {gameState.showTerminal && (
+          <div className="absolute inset-0 bg-black/90 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-8 max-w-[600px] mx-auto">
+            <div className="w-full max-w-xs space-y-4">
+              <div className="flex items-center gap-2 text-green-500 font-mono text-sm mb-4">
+                <span className="animate-pulse">_</span> SECURITY_TERMINAL_V2.0
+              </div>
+              <p className="text-xs opacity-50 mb-6 font-mono">ENCRYPTED KEY REQUIRED. HINT: {gameState.password}</p>
+              <input 
+                autoFocus
+                type="text"
+                maxLength={4}
+                value={inputPassword}
+                onChange={(e) => setInputPassword(e.target.value.replace(/\D/g, ''))}
+                onKeyDown={(e) => e.key === 'Enter' && handlePasswordSubmit()}
+                placeholder="0000"
+                className="w-full bg-zinc-900 border-2 border-green-900/50 text-green-500 text-center text-4xl py-4 rounded-lg font-mono tracking-[1em] focus:outline-none focus:border-green-500"
+              />
+              <div className="grid grid-cols-2 gap-3">
+                 <button 
+                  onClick={() => setGameState(prev => ({ ...prev, showTerminal: false }))}
+                  className="py-3 bg-zinc-800 text-white rounded-lg font-bold hover:bg-zinc-700"
+                >
+                  ABORT
+                </button>
+                <button 
+                  onClick={handlePasswordSubmit}
+                  className="py-3 bg-green-600 text-white rounded-lg font-bold hover:bg-green-500"
+                >
+                  INJECT
+                </button>
+              </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* Controls & Intel */}
-      <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6 items-end">
-        <div className="bg-zinc-800/10 p-4 rounded-xl border border-zinc-800/50">
-          <h3 className="text-[10px] font-black uppercase text-zinc-500 mb-3 tracking-widest flex items-center gap-2">
-            <ShieldAlert size={12} className="text-blue-400" /> Security Intel
-          </h3>
-          <div className="flex gap-4 text-xs text-zinc-400 flex-wrap">
-             <div className="flex items-center gap-2"><div className="bg-zinc-800 px-2 py-1 rounded border border-zinc-700 text-white font-mono">WASD</div> Move</div>
-             <div className="flex items-center gap-2"><div className="bg-zinc-800 px-2 py-1 rounded border border-zinc-700 text-white font-mono">P</div> Pause</div>
-             <div className="flex items-center gap-2"><div className="bg-zinc-800 px-2 py-1 rounded border border-zinc-700 text-white font-mono">R</div> Reset</div>
-             <div className="flex items-center gap-2"><div className="w-3 h-3 bg-blue-500 rounded-full" /> Avoid Guards</div>
+      <div className="flex flex-wrap justify-center gap-8 items-start w-full">
+        <VirtualControls 
+          onMove={(dir) => setMoveDir(dir)} 
+          onStop={() => setMoveDir(Direction.NONE)} 
+        />
+        
+        <div className="flex flex-col gap-4">
+          <div className="flex gap-2">
+            <button 
+              onClick={() => setGameState(prev => ({ ...prev, isPaused: !prev.isPaused }))}
+              className="p-4 bg-zinc-800 rounded-xl hover:bg-zinc-700 transition-colors"
+              title="Pause (P)"
+            >
+              {gameState.isPaused ? <Play size={24} /> : <Pause size={24} />}
+            </button>
+            <button 
+              onClick={resetGame}
+              className="p-4 bg-zinc-800 rounded-xl hover:bg-zinc-700 transition-colors"
+              title="Restart"
+            >
+              <RotateCcw size={24} />
+            </button>
+            <button 
+              onClick={() => setIsMuted(!isMuted)}
+              className="p-4 bg-zinc-800 rounded-xl hover:bg-zinc-700 transition-colors"
+              title="Mute"
+            >
+              {isMuted ? <VolumeX size={24} /> : <Volume2 size={24} />}
+            </button>
+          </div>
+          <div className="text-[10px] uppercase font-bold opacity-30 text-center">
+            WASD TO MOVE • P TO PAUSE
           </div>
         </div>
-
-        <VirtualControls 
-          onMove={(dir) => {
-             setMovement(prev => ({
-                ...prev,
-                'KeyW': dir === Direction.UP,
-                'KeyS': dir === Direction.DOWN,
-                'KeyA': dir === Direction.LEFT,
-                'KeyD': dir === Direction.RIGHT,
-             }));
-          }}
-          onStop={() => {
-             setMovement({
-                'KeyW': false, 'KeyS': false, 'KeyA': false, 'KeyD': false,
-                'ArrowUp': false, 'ArrowDown': false, 'ArrowLeft': false, 'ArrowRight': false
-             });
-          }}
-        />
-      </div>
-
-      <div className="mt-4 text-center italic text-zinc-500 text-sm animate-pulse">
-        Objective: Collect all dollar bills, avoid blue guards, and find the security note before the timer runs out!
       </div>
     </div>
   );
