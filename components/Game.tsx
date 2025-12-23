@@ -1,5 +1,5 @@
 
-import { DollarSign, Lock, Move, Pause, Play, RotateCcw, Unlock, ShieldAlert, Timer as TimerIcon } from 'lucide-react';
+import { DollarSign, Lock, Move, Pause, Play, RotateCcw, Unlock, ShieldAlert, Timer as TimerIcon, Trophy } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Direction, GameState, Money, Point, Wall, Guard } from '../types';
 import { VirtualControls } from './VirtualControls';
@@ -16,6 +16,8 @@ const INITIAL_TIME_PER_FLOOR = 60; // seconds
 const playSound = (type: 'sine' | 'square' | 'sawtooth' | 'triangle', freq: number, duration: number, volume: number = 0.1) => {
   try {
     const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    
     const oscillator = audioCtx.createOscillator();
     const gainNode = audioCtx.createGain();
 
@@ -58,7 +60,6 @@ const sounds = {
 
 const generateWalls = (floor: number): Wall[] => {
   const walls: Wall[] = [
-    // Boundaries
     { x: 0, y: 0, w: CANVAS_WIDTH, h: 10 },
     { x: 0, y: CANVAS_HEIGHT - 10, w: CANVAS_WIDTH, h: 10 },
     { x: 0, y: 0, w: 10, h: CANVAS_HEIGHT },
@@ -134,6 +135,7 @@ const generatePassword = () => {
 
 export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [hasStarted, setHasStarted] = useState(false);
   const [gameState, setGameState] = useState<GameState>({
     playerPos: { x: 50, y: 50 },
     currentFloor: 1,
@@ -219,7 +221,7 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
   };
 
   const update = useCallback(() => {
-    if (gameState.isPaused || gameState.isGameOver || gameState.showTerminal) return;
+    if (!hasStarted || gameState.isPaused || gameState.isGameOver || gameState.showTerminal) return;
 
     const now = Date.now();
     const dt = (now - lastTimeRef.current) / 1000;
@@ -228,7 +230,6 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
     pulseRef.current += 0.05;
 
     setGameState(prev => {
-      // Timer update
       let newTimeLeft = prev.timeLeft - dt;
       if (newTimeLeft <= 0) {
         sounds.passwordFail();
@@ -238,7 +239,6 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
         return prev;
       }
       
-      // Low time tick sound
       if (newTimeLeft < 5) {
         tickCounterRef.current += dt;
         if (tickCounterRef.current > 0.5) {
@@ -247,7 +247,6 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
         }
       }
 
-      // Movement update
       let dx = 0;
       let dy = 0;
       if (movement['ArrowUp'] || movement['KeyW']) dy -= SPEED;
@@ -279,7 +278,6 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
 
       const newPos = { x: newX, y: newY };
 
-      // Money collection
       let newScore = prev.score;
       let collectedAtLeastOne = false;
       const newMoney = prev.money.map(m => {
@@ -295,7 +293,6 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
 
       if (collectedAtLeastOne) sounds.collect();
 
-      // Guard Patrol Update
       const newGuards = prev.guards.map(g => {
         const target = g.path[g.currentPathIndex];
         const angle = Math.atan2(target.y - g.pos.y, target.x - g.pos.x);
@@ -314,7 +311,6 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
         return { ...g, pos: newGPos, currentPathIndex: newIndex };
       });
 
-      // Collision Detection: Guard vs Player
       const caught = newGuards.some(g => {
         return Math.abs(g.pos.x - (newPos.x + PLAYER_SIZE / 2)) < 25 &&
                Math.abs(g.pos.y - (newPos.y + PLAYER_SIZE / 2)) < 25;
@@ -331,7 +327,7 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
           Math.abs(passwordStation.x - (newPos.x + PLAYER_SIZE/2)) < 40 &&
           Math.abs(passwordStation.y - (newPos.y + PLAYER_SIZE/2)) < 40) {
         found = true;
-        sounds.collect(); // Sound for finding the code
+        sounds.collect();
       }
 
       let showTerminal = prev.showTerminal;
@@ -351,7 +347,7 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
         timeLeft: newTimeLeft
       };
     });
-  }, [movement, gameState.isPaused, gameState.isGameOver, gameState.showTerminal, initFloor]);
+  }, [movement, gameState.isPaused, gameState.isGameOver, gameState.showTerminal, hasStarted, initFloor]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -417,12 +413,12 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
 
     const playerMidX = gameState.playerPos.x + PLAYER_SIZE / 2;
     const playerMidY = gameState.playerPos.y + PLAYER_SIZE / 2;
+    
+    // Hint
     const distToExit = Math.sqrt(Math.pow(gameState.doorPos.x - playerMidX, 2) + Math.pow(gameState.doorPos.y - playerMidY, 2));
-
-    if (distToExit < HINT_DISTANCE_THRESHOLD && !gameState.showTerminal) {
+    if (distToExit < HINT_DISTANCE_THRESHOLD && !gameState.showTerminal && hasStarted) {
       const angle = Math.atan2(gameState.doorPos.y - playerMidY, gameState.doorPos.x - playerMidX);
       const hintOpacity = (1 - distToExit / HINT_DISTANCE_THRESHOLD) * (0.3 + 0.2 * Math.sin(pulseRef.current * 4));
-      
       ctx.save();
       ctx.translate(playerMidX + Math.cos(angle) * 40, playerMidY + Math.sin(angle) * 40);
       ctx.rotate(angle);
@@ -430,9 +426,7 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
       ctx.lineWidth = 3;
       ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.moveTo(-10, -5);
-      ctx.lineTo(5, 0);
-      ctx.lineTo(-10, 5);
+      ctx.moveTo(-10, -5); ctx.lineTo(5, 0); ctx.lineTo(-10, 5);
       ctx.stroke();
       ctx.restore();
     }
@@ -450,45 +444,35 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
       ctx.fillRect(g.pos.x - 10, g.pos.y - 18, 20, 6);
     });
 
-    // --- DRAW ROBBER (Improved Visual) ---
     const px = gameState.playerPos.x;
     const py = gameState.playerPos.y;
-    
-    // Shirt (Striped)
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(px, py + 10, PLAYER_SIZE, 20);
     ctx.fillStyle = '#000000';
     ctx.fillRect(px, py + 12, PLAYER_SIZE, 4);
     ctx.fillRect(px, py + 20, PLAYER_SIZE, 4);
     ctx.fillRect(px, py + 28, PLAYER_SIZE, 2);
-
-    // Head
     ctx.fillStyle = '#fca5a5';
     ctx.beginPath();
     ctx.arc(px + PLAYER_SIZE / 2, py + 8, 8, 0, Math.PI * 2);
     ctx.fill();
-
-    // Mask
     ctx.fillStyle = '#000000';
-    ctx.fillRect(px + PLAYER_SIZE / 2 - 8, py + 4, 16, 6);
-    
-    // Eyes in mask
+    ctx.fillRect(px + PLAYER_SIZE / 2 - 8, py + 5, 16, 6);
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(px + PLAYER_SIZE / 2 - 5, py + 6, 2, 2);
-    ctx.fillRect(px + PLAYER_SIZE / 2 + 3, py + 6, 2, 2);
-
-    // Beanie/Hat
+    ctx.fillRect(px + PLAYER_SIZE / 2 - 5, py + 7, 2, 2);
+    ctx.fillRect(px + PLAYER_SIZE / 2 + 3, py + 7, 2, 2);
     ctx.fillStyle = '#3f3f46';
     ctx.beginPath();
     ctx.arc(px + PLAYER_SIZE / 2, py + 4, 8, Math.PI, 0);
     ctx.fill();
 
-    // Loot Bag on Back
     if (gameState.score > 0) {
       ctx.fillStyle = '#713f12';
       ctx.beginPath();
       ctx.arc(px + 4, py + 20, 6, 0, Math.PI * 2);
       ctx.fill();
+      ctx.strokeStyle = '#45210b';
+      ctx.stroke();
     }
 
     if (gameState.isPaused) {
@@ -496,22 +480,24 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
       ctx.fillRect(0,0, CANVAS_WIDTH, CANVAS_HEIGHT);
       ctx.fillStyle = 'white';
       ctx.font = 'bold 40px sans-serif';
-      ctx.fillText('PAUSED', CANVAS_WIDTH/2 - 80, CANVAS_HEIGHT/2);
+      ctx.textAlign = 'center';
+      ctx.fillText('PAUSED', CANVAS_WIDTH/2, CANVAS_HEIGHT/2);
     }
 
     if (gameState.isGameOver) {
       ctx.fillStyle = 'rgba(0,0,0,0.85)';
       ctx.fillRect(0,0, CANVAS_WIDTH, CANVAS_HEIGHT);
       ctx.fillStyle = '#ef4444';
-      ctx.font = 'black 48px sans-serif';
-      ctx.fillText('BUSTED!', CANVAS_WIDTH/2 - 95, CANVAS_HEIGHT/2);
+      ctx.font = 'bold 48px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('BUSTED!', CANVAS_WIDTH/2, CANVAS_HEIGHT/2);
       ctx.fillStyle = 'white';
       ctx.font = '20px sans-serif';
-      ctx.fillText('The guards caught you.', CANVAS_WIDTH/2 - 100, CANVAS_HEIGHT/2 + 40);
+      ctx.fillText('The guards caught you.', CANVAS_WIDTH/2, CANVAS_HEIGHT/2 + 40);
       ctx.font = 'bold 16px sans-serif';
-      ctx.fillText('PRESS R TO RETRY', CANVAS_WIDTH/2 - 75, CANVAS_HEIGHT/2 + 80);
+      ctx.fillText('PRESS R TO RETRY', CANVAS_WIDTH/2, CANVAS_HEIGHT/2 + 80);
     }
-  }, [gameState, isDark]);
+  }, [gameState, isDark, hasStarted]);
 
   const loop = useCallback(() => {
     update();
@@ -543,6 +529,7 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
 
   return (
     <div className="relative group max-w-full">
+      {/* HUD */}
       <div className="mb-4 flex flex-wrap gap-4 items-center justify-between bg-zinc-800/20 p-4 rounded-xl border border-zinc-700/30 backdrop-blur-sm shadow-xl">
         <div className="flex gap-6 items-center">
           <div className="flex flex-col">
@@ -573,18 +560,21 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
           <button 
             onClick={() => setGameState(s => ({ ...s, isPaused: !s.isPaused }))}
             className="p-3 bg-zinc-700/50 hover:bg-zinc-600 rounded-lg transition-all"
+            aria-label="Pause"
           >
             {gameState.isPaused ? <Play size={20} /> : <Pause size={20} />}
           </button>
           <button 
             onClick={resetGame}
             className="p-3 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-all"
+            aria-label="Reset"
           >
             <RotateCcw size={20} />
           </button>
         </div>
       </div>
 
+      {/* Main Canvas Area */}
       <div className="relative rounded-2xl overflow-hidden border-4 border-zinc-800 shadow-2xl bg-zinc-900">
         <canvas 
           ref={canvasRef} 
@@ -593,13 +583,31 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
           className="max-w-full h-auto cursor-none"
         />
 
-        {gameState.foundPassword && !gameState.showTerminal && !gameState.isGameOver && (
+        {/* Start Screen Overlay */}
+        {!hasStarted && (
+          <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-8 text-center animate-in fade-in duration-500">
+             <Trophy size={64} className="text-yellow-500 mb-6" />
+             <h1 className="text-3xl font-black text-white mb-2 uppercase tracking-tighter">Ready for the heist?</h1>
+             <p className="text-zinc-400 max-w-xs mb-8">Collect loot, find the password, and escape the floor before security locks down!</p>
+             <button 
+               onClick={() => {
+                 setHasStarted(true);
+                 sounds.transition();
+               }}
+               className="bg-yellow-500 hover:bg-yellow-400 text-black font-black px-12 py-4 rounded-xl text-xl uppercase tracking-widest shadow-[0_0_30px_rgba(234,179,8,0.4)] hover:scale-105 active:scale-95 transition-all"
+             >
+               Start Heist
+             </button>
+          </div>
+        )}
+
+        {hasStarted && gameState.foundPassword && !gameState.showTerminal && !gameState.isGameOver && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-green-500 text-white px-4 py-2 rounded-full font-mono font-bold shadow-lg animate-bounce border-2 border-white">
             SCANNED CODE: {gameState.password}
           </div>
         )}
 
-        {!gameState.foundPassword && !gameState.showTerminal && !gameState.isGameOver && (
+        {hasStarted && !gameState.foundPassword && !gameState.showTerminal && !gameState.isGameOver && (
             <div className="absolute top-4 right-4 bg-zinc-800/80 text-white p-3 rounded-lg text-xs border border-zinc-700">
                 <p className="flex items-center gap-2 mb-1"><Lock size={14} className="text-red-400" /> Door is Locked</p>
                 <p className="text-zinc-400">Find the security note on the floor!</p>
@@ -658,15 +666,16 @@ export const Game: React.FC<{ isDark: boolean }> = ({ isDark }) => {
         )}
       </div>
 
+      {/* Controls & Intel */}
       <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6 items-end">
         <div className="bg-zinc-800/10 p-4 rounded-xl border border-zinc-800/50">
           <h3 className="text-[10px] font-black uppercase text-zinc-500 mb-3 tracking-widest flex items-center gap-2">
             <ShieldAlert size={12} className="text-blue-400" /> Security Intel
           </h3>
           <div className="flex gap-4 text-xs text-zinc-400 flex-wrap">
-             <div className="flex items-center gap-2"><div className="bg-zinc-800 px-2 py-1 rounded border border-zinc-700 text-white">WASD</div> Move</div>
-             <div className="flex items-center gap-2"><div className="bg-zinc-800 px-2 py-1 rounded border border-zinc-700 text-white">P</div> Pause</div>
-             <div className="flex items-center gap-2"><div className="bg-zinc-800 px-2 py-1 rounded border border-zinc-700 text-white">R</div> Reset</div>
+             <div className="flex items-center gap-2"><div className="bg-zinc-800 px-2 py-1 rounded border border-zinc-700 text-white font-mono">WASD</div> Move</div>
+             <div className="flex items-center gap-2"><div className="bg-zinc-800 px-2 py-1 rounded border border-zinc-700 text-white font-mono">P</div> Pause</div>
+             <div className="flex items-center gap-2"><div className="bg-zinc-800 px-2 py-1 rounded border border-zinc-700 text-white font-mono">R</div> Reset</div>
              <div className="flex items-center gap-2"><div className="w-3 h-3 bg-blue-500 rounded-full" /> Avoid Guards</div>
           </div>
         </div>
